@@ -1,0 +1,530 @@
+---
+title: "Wrangling Project"
+output: html_notebook
+---
+
+```{r}
+library(dplyr)
+library(jsonlite)
+library(knitr)
+library(lubridate)
+library(readr)
+library(stringi)
+library(stringr)
+library(tibble)
+library(tidyr)
+```
+
+## Data Gathering
+
+```{r}
+archive <- read.csv("twitter-archive-enhanced.csv", stringsAsFactors = FALSE)
+```
+
+```{r}
+url <- "https://d17h27t6h515a5.cloudfront.net/topher/2017/August/599fd2ad_image-predictions/image-predictions.tsv"
+
+img_predictions <- read.delim(url, sep = "\t", header = TRUE)
+```
+
+```{r}
+api_data <- jsonlite::stream_in(file("tweet_json.txt"))
+```
+
+```{r}
+api_data <- api_data %>%
+  select(id, retweet_count, favorite_count)
+```
+
+## Assessing
+
+#### Archive Data
+
+```{r}
+head(archive)
+```
+
+```{r}
+kable(table(archive$source), col.names = c("Source", "Count"))
+```
+
+```{r}
+head(archive$text)
+```
+
+```{r}
+str(archive)
+```
+
+```{r}
+kable(colSums(!is.na(archive)), col.names = c("Column", "Non-Null Count"))
+```
+
+```{r}
+len <- nrow(table(archive$rating_numerator))
+
+print(table(archive$rating_numerator)[1:(len/2)])
+print(table(archive$rating_numerator)[(len/2):len])
+```
+
+```{r}
+archive %>%
+  filter(rating_numerator > 14) %>%
+  select(text, rating_numerator, rating_denominator) %>%
+  slice_head(n = 10)
+```
+
+📝 The 84/70 rating is for a group of dogs. This warrants further analysis...
+
+```{r}
+table(archive$rating_denominator)
+```
+
+#### Image Prediction Data
+
+```{r}
+head(img_predictions)
+```
+
+```{r}
+str(img_predictions)
+```
+
+#### API Data
+
+```{r}
+head(api_data)
+```
+
+```{r}
+str(api_data)
+```
+
+### Quality Issues
+
+#### Archive Data
+
+1.  Includes retweets. Per the `retweeted_` columns, there are 181 tweets.
+
+2.  Includes tweets without URLs. There are 2356 entries, but only 2297 of them have `expanded_url`s.
+
+3.  The `source` data includes HTML tags.
+
+4.  The `text` data includes URLs referring back to the tweet itself. These URLs are shortened forms of those found in the `extended_urls` column.
+
+5.  Some of the `expanded_urls` values consist of duplicate URLs strung together, separated by commas.
+
+6.  The `rating_numerator` column
+
+    -   lists only the fractional part of decimal numbers,
+    -   lists the first numerator found in the `text` of each tweet---whether it's the rating or not.
+
+7.  The `rating_denominator` column likewise lists the first denominator found in the `text` of each tweet---whether it's the rating or not.
+
+8.  The `id` columns should be object-type, not float or int. And the `timestamp` column should be datetime.
+
+### Tidiness Issues
+
+1.  The tweet data spans multiple tables. The **`api_data`** consists of additional data on the tweets in **`archive`**, and the **`img_predictions`** are largely for the images in those tweets. As all three tables pertain to the same crop of tweets, they should be merged into a super table.
+
+2.  The "dog stage" data spans multiple columns: `doggo`, `floofer`, `pupper`, and `puppo` are values of the "dog stage" variable.
+
+## Cleaning Data
+
+```{r}
+# Make copies of original pieces of data
+archive_clean <- archive
+api_data_clean <- api_data
+img_predict_clean <- img_predictions
+```
+
+### Issue 1: The 'archive' table includes retweets.
+
+#### Define: Query tweets without `retweeted_` data.\* And drop the now useless `retweeted_` columns.
+
+\*If a tweet has `retweeted_` data, it's a retweet.
+
+#### Code
+
+```{r}
+archive_clean <- archive_clean %>%
+  filter(is.na(retweeted_status_id))
+```
+
+```{r}
+archive_clean <- archive_clean %>%
+  select(-retweeted_status_id, -retweeted_status_user_id,
+         -retweeted_status_timestamp)
+```
+
+#### Test
+
+```{r}
+kable(names(archive_clean), col.names = "Column Names")
+```
+
+### Issue 2: The 'archive' table includes tweets without URLs.
+
+#### Define: Drop the tweets without `expanded_urls`.
+
+#### Code
+
+```{r}
+archive_clean <- archive_clean %>%
+  filter(!is.na(expanded_urls))
+```
+
+#### Test
+
+```{r}
+kable(colSums(!is.na(archive_clean)), col.names = c("Column", "Non-Null Count"))
+```
+
+### Issue 3: The tweet data spans multiple tables.
+
+#### Define: Merge the tables, renaming the key columns as needed.
+
+#### Code
+
+```{r}
+api_data_clean <- api_data_clean %>%
+  rename(tweet_id = id)
+```
+
+```{r}
+archive_clean <- inner_join(api_data_clean, archive_clean, by = "tweet_id") %>%
+  inner_join(img_predict_clean, by = "tweet_id")
+```
+
+#### Test
+
+```{r}
+kable(colSums(!is.na(archive_clean)), col.names = c("Column", "Non-Null Count"))
+```
+
+### Issue 4: The "dog stage" data spans multiple columns: `doggo`, `floofer`, `pupper`, and `puppo` are values of the "dog stage" variable.
+
+Most of the values are null.
+
+#### Define: Join the "dog stage" column's values in a new `dog_stage` column, but only the non-null values. Drop the "dog stage" columns---save `dog_stage`.
+
+#### Code
+
+```{r}
+dog_stage_col <- c("doggo", "pupper", "floofer", "puppo")
+
+archive_clean <- archive_clean %>%
+  mutate(across(all_of(dog_stage_col), ~ ifelse(. == "None", NA_character_, .)))
+
+archive_clean <- archive_clean %>%
+  unite(dog_stage, all_of(dog_stage_col), sep = "/", na.rm = TRUE)
+```
+
+#### Test
+
+```{r}
+archive_clean %>%
+  slice(10:14) %>%
+  select(tweet_id, dog_stage)
+```
+
+```{r}
+kable(colSums(!is.na(archive_clean)), col.names = c("Column", "Non-Null Count"))
+```
+
+```{r}
+unique(archive_clean$dog_stage)
+```
+
+### Issue 4.1: Empty strings are interpreted as non-null.
+
+#### Define: Replace the empty strings with None.
+
+#### Code
+
+```{r}
+archive_clean$dog_stage <- ifelse(archive_clean$dog_stage == "", NA,
+                                  archive_clean$dog_stage)
+```
+
+#### Test
+
+```{r}
+archive_clean %>%
+  slice(10:14) %>%
+  select(tweet_id, dog_stage)
+```
+
+```{r}
+sum(!is.na(archive_clean$dog_stage))
+```
+
+```{r}
+unique(archive_clean$dog_stage)
+```
+
+### Issue 5: The `source` data includes HTML tags.
+
+#### Define: Extract the data from between the tags.
+
+#### Code
+
+```{r}
+archive_clean$source <- str_replace_all(archive_clean$source,
+                                        ".*>(.+)<.*", "\\1")
+```
+
+#### Test
+
+```{r}
+unique(archive_clean$source)
+```
+
+### Issue 6: The `text` data includes URLs referring back to the tweet itself.
+
+#### Define: Remove the tweet URLs.
+
+#### Code
+
+```{r}
+archive_clean$text <- sub(" https://t.co/[a-zA-Z0-9]+", "", archive_clean$text)
+```
+
+#### Test
+
+```{r}
+sum(grepl("https://t.co", archive_clean$text))
+```
+
+```{r}
+head(archive_clean$text[grepl("https://t.co", archive_clean$text)])
+```
+
+✅ These URLs---separated by newlines---point to fundraiser pages: they are 
+part of the tweet.
+
+### Issue 7: Some of the `expanded_urls` values consist of duplicate URLs strung together, separated by commas.
+
+#### Define: Split the multi-URL strings into URL lists. Then, extract the unique, list elements...
+
+#### Code
+
+```{r}
+archive_clean$expanded_urls <- strsplit(archive_clean$expanded_urls, ",")
+
+# Remove duplicates within each list element
+archive_clean$expanded_urls <- lapply(
+  archive_clean$expanded_urls, function(urls) {
+    unique_urls <- unique(urls)
+    as.character(unique_urls)
+  }
+)
+```
+
+#### Test
+
+```{r}
+multi_url <- archive_clean %>%
+  filter(lengths(expanded_urls) > 1) %>%
+  pull(expanded_urls)
+
+head(multi_url)
+tail(multi_url)
+```
+
+⚠️ While not duplicates per se, these fundraiser URLs are somewhat redundant 
+with their shortened versions in the `test` data (above).
+
+### Issue 7.1: Lists as elements do not make for tidy data frames!
+
+Data should be discreet.
+
+#### Define: Going down the list of expanded URL lists, for each sub-list:
+
+-   reverse the order of elements such that the Twitter URL is always first,
+-   paste the elements together into a string separated by commas,
+-   and split the elements into separate columns.
+
+#### Code
+
+```{r}
+archive_clean$expanded_urls <- lapply(
+  archive_clean$expanded_urls, function(x) paste(rev(x), collapse = ", ")
+)
+
+```
+
+```{r}
+# The embedded URL column will be filled with `NA` where applicable.
+archive_clean <- separate(
+  archive_clean, expanded_urls,
+  into = c("expanded_url_twitter", "expanded_url_embedded"),
+  sep = ", "
+)
+```
+
+### Test
+
+```{r}
+head(archive_clean)
+```
+
+```{r}
+head(subset(archive_clean, select = c("expanded_url_twitter",
+                                      "expanded_url_embedded")), 30)
+```
+
+### Issue 8: The `rating_numerator` column
+
+-   lists only the fractional part of decimal numbers,
+-   lists the first numerator found in the `text` of each tweet---whether it's the rating or not.
+
+#### Define: Replace the `rating_numerator` values with complete rating numerators---integers and all---extracted from the `text` data.
+
+#### Code
+
+```{r}
+# Find all sequences resembling a numerator and select the last the last one.
+# The ratings are at the end.
+archive_clean$rating_numerator <- sapply(
+  str_extract_all(archive_clean$text, "\\d*\\.?\\d+/"),
+  function(x) tail(x, n = 1)
+)
+
+archive_clean$rating_numerator <- str_replace(archive_clean$rating_numerator,
+                                              "/$", "")
+```
+
+#### Test
+
+```{r}
+archive_clean %>%
+  filter(str_detect(text, "\\d+\\.\\d+/")) %>%
+  select(text, rating_numerator)
+```
+
+```{r}
+archive_clean %>%
+  select(text, rating_numerator)
+```
+
+```{r}
+unique(archive_clean$rating_numerator)
+```
+
+```{r}
+archive_clean %>%
+  filter(rating_numerator == ".10") %>%
+  select(text, rating_numerator)
+```
+
+### Issue 8.1: Periods immediately preceding the rating numerators were picked up by the RegEx.
+
+#### Define: Strip preceding periods from the `rating_numerator` values.
+
+#### Code
+
+```{r}
+archive_clean$rating_numerator <- as.numeric(
+  sub("^\\.", "", archive_clean$rating_numerator)
+)
+```
+
+#### Test
+
+```{r}
+unique(archive_clean$rating_numerator)
+```
+
+### Issue 9: The `rating_denominator` column lists the first denominator\* encountered in the `text` of each tweet.
+
+Conversely, the rating denominators come at the end.
+
+#### Define: List the first denominator found in the `text` *starting from the end*.
+
+#### Code
+
+```{r}
+archive_clean$rating_denominator <- stri_extract_last_regex(
+  archive_clean$text, "\\/\\d+[\\s.,!]+|\\/\\d+$"
+)
+
+archive_clean$rating_denominator <- gsub(
+  "[/. ,!]", "", archive_clean$rating_denominator
+)
+```
+
+#### Test
+
+```{r}
+archive_clean %>%
+  filter(is.na(rating_denominator)) %>%
+  select(text, rating_numerator) %>%
+  slice_head(n = 5)
+```
+
+```{r}
+unique(archive_clean$rating_denominator)
+```
+
+### Issue 9.1: The RegEx pattern
+
+-   isn't picking up denominators that are immediately followed by 's' or ')' characters,
+-   is grabbing myriad, excess characters along with some of the denominators.
+
+#### Define: Add 's' and')' to the RegEx, and strip the excess characters.
+
+#### Code
+
+```{r}
+archive_clean$rating_denominator <- stri_extract_last_regex(
+  archive_clean$text, "\\/\\d+[\\s.,!)]+|\\/\\d+s\\s|\\/\\d+$"
+)
+
+archive_clean$rating_denominator <- as.numeric(
+  gsub("[/. ,!)s\n]", "", archive_clean$rating_denominator)
+)
+```
+
+#### Test
+
+```{r}
+unique(archive_clean$rating_denominator)
+```
+
+```{r}
+archive_clean %>%
+  filter(rating_denominator != "10") %>%
+  select(text, rating_denominator)
+```
+
+### Issue 10: The `id` columns should be object-type, not float or int. And the `timestamp` column should be datetime.
+
+#### Define: Cast the `id` columns as object-type and the `timestamp` column as datetime.
+
+#### Code
+
+```{r}
+id_col_type <- c(
+  tweet_id = "character",
+  in_reply_to_status_id = "character",
+  in_reply_to_user_id = "character"
+)
+
+archive_clean <- archive_clean %>%
+  mutate(across(all_of(names(id_col_type)), as.character))
+
+archive_clean$timestamp <- as_datetime(archive_clean$timestamp)
+```
+
+#### Test
+
+```{r}
+str(archive_clean)
+```
+
+## Storing Data
+
+```{r}
+write_csv(archive_clean, "twitter_archive_masteR.csv")
+```
