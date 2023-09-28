@@ -5,10 +5,12 @@ output: html_notebook
 
 ```{r}
 library(dplyr)
+library(ggplot2)
 library(jsonlite)
 library(knitr)
 library(lubridate)
 library(readr)
+library(scales)
 library(stringi)
 library(stringr)
 library(tibble)
@@ -379,7 +381,8 @@ head(subset(archive_clean, select = c("expanded_url_twitter",
 ### Issue 8: The `rating_numerator` column
 
 -   lists only the fractional part of decimal numbers,
--   lists the first numerator found in the `text` of each tweet---whether it's the rating or not.
+-   lists the first numerator found in the `text` of each tweet---whether it's
+    the rating or not.
 
 #### Define: Replace the `rating_numerator` values with complete rating numerators---integers and all---extracted from the `text` data.
 
@@ -461,7 +464,7 @@ archive_clean$rating_denominator <- gsub(
 ```{r}
 archive_clean %>%
   filter(is.na(rating_denominator)) %>%
-  select(text, rating_numerator) %>%
+  select(text, rating_denominator) %>%
   slice_head(n = 5)
 ```
 
@@ -530,3 +533,189 @@ str(archive_clean)
 ```{r}
 write_csv(archive_clean, "twitter_archive_masteR.csv")
 ```
+
+```{r}
+df <- read.csv("twitter_archive_masteR.csv")
+```
+
+```{r}
+str(df)
+```
+
+```{r}
+df$tweet_id <- as.character(df$tweet_id)
+```
+
+## Analyzing and Visualizing Data
+
+```{r}
+rating_cols = c("rating_numerator", "rating_denominator", "text", "jpg_url")
+
+subset(df, rating_denominator > 10, select = rating_cols)
+```
+
+### Insight #1: The `rating_denominator` is $10 \times n$, where $n$ is the number of dogs.
+
+-   There's normally one dog, and the normal denominator is 10.
+-   #988 has five dogs and a denominator of 50.
+-   #946 has nine puppies and a rating of 99 out of 90---an average rating of 11/10.
+
+```{r}
+# Normalization of ratings
+df$normalized_rating <- (df$rating_numerator / df$rating_denominator) * 10
+
+summary(df$normalized_rating)
+```
+
+```{r}
+boxplot_stats_result <- boxplot.stats(df$normalized_rating)
+lower_limit <- boxplot_stats_result$stats[1]
+upper_limit <- boxplot_stats_result$stats[5]
+```
+
+```{r}
+df_sans_outlier <- subset(df, normalized_rating >= lower_limit & normalized_rating <= upper_limit)
+```
+
+```{r}
+summary(df_sans_outlier$normalized_rating)
+```
+
+```{r}
+mean(df$rating_numerator)
+```
+
+```{r}
+df_outliers <- subset(df, normalized_rating < lower_limit | normalized_rating > upper_limit)
+
+subset(df_outliers, rating_numerator > upper_limit, select = rating_cols)
+```
+
+### Insight #1.1: Normalized and stripped of outliers, the mean rating is 10.9 out of 10.
+
+-   With outliers, the mean is 11.7.
+    -   Largely due to a couple of gag tweets (above).
+-   Prior to normalization, the mean rating was 12.2.
+
+```{r}
+conf_cols <- c("p1_conf", "p2_conf", "p3_conf")
+subset_df <- subset(df_sans_outlier, select = conf_cols)
+
+summary(subset_df)
+```
+
+### Insight #2: The neural network is not very confident in its dog breed predictions.
+
+-   The median confidence level is 0.60, and that's for its best guesses!
+-   The five-number summary is:
+
+```         
+    - minimum      4%
+    - 1st quartile 37%
+    - median       60%
+    - 3rd quartile 85%
+    - maximum      100%
+```
+
+```{r}
+# If we are to analyze the tweets on a per-breed basis, we need to be reasonably
+# sure that a Pug is—in fact—a Pug
+by_breed <- df_sans_outlier %>%
+  filter(p1_conf >= 0.80 & p1_dog == "True")
+```
+
+```{r}
+num_dogs <- by_breed %>%
+  group_by(p1) %>%
+  summarize(number_of_dogs = n())
+
+head(num_dogs)
+```
+
+```{r}
+mean_rating <- by_breed %>%
+  group_by(p1) %>%
+  summarize(mean_rating = mean(normalized_rating, na.rm = TRUE))
+
+head(mean_rating)
+```
+
+```{r}
+df_by_breed <- full_join(num_dogs, mean_rating)
+df_by_breed_sort <- arrange(df_by_breed, mean_rating)
+```
+
+```{r}
+head(df_by_breed_sort, 5)
+```
+
+```{r}
+tail(df_by_breed_sort, 5)
+```
+
+```{r}
+df_by_breed %>%
+  group_by(number_of_dogs) %>%
+  summarize(mean_rating = mean(mean_rating)) %>%
+  arrange(number_of_dogs)
+
+```
+
+### Insight #3: Being unique appears to give a ratings boost.
+
+-   The highest-rated dogs are all unique.
+-   On average, the most popular breeds tend to be higher rated than the least common breeds:
+    -   Unique breeds are the exception.
+
+```{r}
+by_breed_mean <- by_breed %>%
+  group_by(p1) %>%
+  summarize(
+    mean_normalized_rating = mean(normalized_rating),
+    mean_favorite_count = mean(favorite_count)
+  )
+```
+
+```{r}
+by_breed_mean
+```
+
+```{r}
+ggplot(by_breed_mean, aes(x = mean_normalized_rating, y = mean_favorite_count)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "#3274A1") +
+  labs(
+    x = "Normalized Rating",
+    y = "Favorite Count",
+    title = "Breed Rating vs Popular Preference"
+  ) +
+  scale_y_continuous(labels = comma_format(scale = 1e-3, suffix = "k"))
+```
+
+```{r}
+r <- cor(by_breed_mean$mean_normalized_rating, by_breed_mean$mean_favorite_count)
+R2 <- r^2
+
+cat("      Correlation coefficient (r):    ", r, "\n")
+cat("Coefficient of determination (R2):    ", R2)
+```
+
+### Insight #4: The ratings correlate quite well with popular preference.
+
+-   There is a moderate, positive correlation between normalized rating and favorite count.
+    -   The correlation coefficient ($r$) is 0.5982.
+    -   The coefficient of determination ($R^2$) is 0.358.
+-   Favorite count is a [reflection of user preference](https://medium.com/@Encore/favorites-vs-retweets-and-why-one-is-more-important-than-the-other-ba12ee20e9ba). The most-favorited dog breeds are the most preferred.
+
+### Insights Recap:
+1. The `rating_denominator` is $10 \times n$, where $n$ is the number of dogs.
+
+    1.1. Normalized and stripped of outliers, the mean rating is 10.9 out of 10.
+
+2. The neural network is not very confident in its dog breed predictions.
+
+3. Being a unique breed appears to give a ratings boost.
+
+4. The ratings correlate quite well with popular preference, though they are not very predictive.*
+
+*This is normal for explanatory variables where the response variable is human behavior.
