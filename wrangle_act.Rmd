@@ -140,7 +140,7 @@ img_predict_clean <- img_predictions
 
 ### Issue 1: The 'archive' table includes retweets.
 
-#### Define: Query tweets without `retweeted_` data.\* And drop the now useless `retweeted_` columns.
+#### Define: Filter for tweets without `retweeted_` data. And deselect the now useless `retweeted_` columns.
 
 \*If a tweet has `retweeted_` data, it's a retweet.
 
@@ -165,7 +165,7 @@ kable(names(archive_clean), col.names = "Column Names")
 
 ### Issue 2: The 'archive' table includes tweets without URLs.
 
-#### Define: Drop the tweets without `expanded_urls`.
+#### Define: Filter for tweets with `expanded_urls`.
 
 #### Code
 
@@ -182,7 +182,7 @@ kable(colSums(!is.na(archive_clean)), col.names = c("Column", "Non-Null Count"))
 
 ### Issue 3: The tweet data spans multiple tables.
 
-#### Define: Merge the tables, renaming the key columns as needed.
+#### Define: Join the tables, renaming the key columns as needed.
 
 #### Code
 
@@ -206,7 +206,7 @@ kable(colSums(!is.na(archive_clean)), col.names = c("Column", "Non-Null Count"))
 
 Most of the values are null.
 
-#### Define: Join the "dog stage" column's values in a new `dog_stage` column, but only the non-null values. Drop the "dog stage" columns---save `dog_stage`.
+#### Define: Unite the "dog stage" column's values into a new `dog_stage` column, but only the non-null values.
 
 #### Code
 
@@ -215,7 +215,9 @@ dog_stage_col <- c("doggo", "pupper", "floofer", "puppo")
 
 archive_clean <- archive_clean %>%
   mutate(across(all_of(dog_stage_col), ~ ifelse(. == "None", NA_character_, .)))
+```
 
+```{r}
 archive_clean <- archive_clean %>%
   unite(dog_stage, all_of(dog_stage_col), sep = "/", na.rm = TRUE)
 ```
@@ -238,7 +240,7 @@ unique(archive_clean$dog_stage)
 
 ### Issue 4.1: Empty strings are interpreted as non-null.
 
-#### Define: Replace the empty strings with None.
+#### Define: Reassign the empty strings with None.
 
 #### Code
 
@@ -265,7 +267,7 @@ unique(archive_clean$dog_stage)
 
 ### Issue 5: The `source` data includes HTML tags.
 
-#### Define: Extract the data from between the tags.
+#### Define: Replace the messy source data with just the part between the tags.
 
 #### Code
 
@@ -440,7 +442,7 @@ unique(archive_clean$rating_numerator)
 
 Conversely, the rating denominators come at the end.
 
-#### Define: List the first denominator found in the `text` *starting from the end*.
+#### Define: Extract the last denominator found in each tweet's `text`.
 
 #### Code
 
@@ -472,7 +474,7 @@ unique(archive_clean$rating_denominator)
 -   isn't picking up denominators that are immediately followed by 's' or ')' characters,
 -   is grabbing myriad, excess characters along with some of the denominators.
 
-#### Define: Add 's' and')' to the RegEx, and strip the excess characters.
+#### Define: Add 's' and')' to the RegEx, and drop the newline escape sequences.
 
 #### Code
 
@@ -500,7 +502,7 @@ archive_clean %>%
 
 ### Issue 10: The `id` columns should be object-type, not float or int. And the `timestamp` column should be datetime.
 
-#### Define: Cast the `id` columns as object-type and the `timestamp` column as datetime.
+#### Define: Convert the `id` columns to character-type and the `timestamp` column to datetime.
 
 #### Code
 
