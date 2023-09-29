@@ -1,6 +1,8 @@
 ---
 title: "Wrangling Project"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 ```{r}
@@ -367,7 +369,7 @@ archive_clean <- separate(
 )
 ```
 
-### Test
+#### Test
 
 ```{r}
 head(archive_clean)
